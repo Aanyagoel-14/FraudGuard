@@ -18,6 +18,11 @@ pip install -r requirements.txt
 2. Create a `.env` file (copy from `.env.example` if available):
 ```bash
 BACKEND_URL=http://localhost:8000
+# Optional Azure OpenAI config if you want AI-based explanations
+# AZURE_OPENAI_ENDPOINT=
+# AZURE_OPENAI_KEY=
+# AZURE_OPENAI_DEPLOYMENT=
+# AZURE_OPENAI_API_VERSION=2023-12-01-preview
 ```
 
 3. Run the server:

@@ -1,0 +1,245 @@
+/**
+ * FraudGuard Warning Popup Styles
+ * Styles for the injected warning popup displayed on suspicious/dangerous websites
+ */
+
+/* Main popup container */
+#fraudguard-warning-popup {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: rgba(0, 0, 0, 0.7);
+  z-index: 999999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+#fraudguard-warning-popup.fraudguard-show {
+  opacity: 1;
+}
+
+/* Popup content box */
+.fraudguard-popup-content {
+  background: white;
+  border-radius: 12px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+  max-width: 500px;
+  width: 90%;
+  max-height: 90vh;
+  overflow-y: auto;
+  transform: scale(0.9);
+  transition: transform 0.3s ease;
+}
+
+#fraudguard-warning-popup.fraudguard-show .fraudguard-popup-content {
+  transform: scale(1);
+}
+
+/* Popup header */
+.fraudguard-popup-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 20px;
+  border-bottom: 1px solid #eee;
+}
+
+/* Risk badge */
+.fraudguard-risk-badge {
+  padding: 8px 16px;
+  border-radius: 20px;
+  font-weight: 600;
+  font-size: 14px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.fraudguard-risk-safe {
+  background: #e8f5e9;
+  color: #2e7d32;
+}
+
+.fraudguard-risk-suspicious {
+  background: #fff3e0;
+  color: #e65100;
+}
+
+.fraudguard-risk-dangerous {
+  background: #ffebee;
+  color: #c62828;
+}
+
+/* Close button */
+.fraudguard-close-btn {
+  background: none;
+  border: none;
+  font-size: 28px;
+  color: #999;
+  cursor: pointer;
+  padding: 0;
+  width: 30px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  transition: all 0.2s;
+}
+
+.fraudguard-close-btn:hover {
+  background: #f5f5f5;
+  color: #333;
+}
+
+/* Popup body */
+.fraudguard-popup-body {
+  padding: 20px;
+}
+
+.fraudguard-title {
+  margin: 0 0 15px 0;
+  font-size: 24px;
+  font-weight: 600;
+  color: #333;
+}
+
+.fraudguard-score {
+  font-size: 18px;
+  margin-bottom: 15px;
+  color: #666;
+}
+
+.fraudguard-score strong {
+  color: #333;
+  font-size: 20px;
+}
+
+.fraudguard-explanation {
+  font-size: 14px;
+  line-height: 1.6;
+  color: #555;
+  margin-bottom: 15px;
+}
+
+.fraudguard-signals {
+  font-size: 13px;
+  margin-bottom: 15px;
+  padding: 15px;
+  background: #f9f9f9;
+  border-radius: 8px;
+  border-left: 4px solid #ff9800;
+}
+
+.fraudguard-signals ul {
+  margin: 10px 0 0 0;
+  padding-left: 20px;
+}
+
+.fraudguard-signals li {
+  margin-bottom: 8px;
+  color: #666;
+}
+
+.fraudguard-recommendation {
+  font-size: 14px;
+  line-height: 1.6;
+  color: #333;
+  padding: 12px;
+  background: #fff3e0;
+  border-radius: 6px;
+  margin: 0;
+}
+
+.fraudguard-recommendation strong {
+  color: #e65100;
+}
+
+/* Popup actions */
+.fraudguard-popup-actions {
+  display: flex;
+  gap: 10px;
+  padding: 20px;
+  border-top: 1px solid #eee;
+  flex-wrap: wrap;
+}
+
+.fraudguard-btn {
+  flex: 1;
+  min-width: 120px;
+  padding: 12px 20px;
+  border: none;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.fraudguard-btn-primary {
+  background: #667eea;
+  color: white;
+}
+
+.fraudguard-btn-primary:hover {
+  background: #5568d3;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 8px rgba(102, 126, 234, 0.3);
+}
+
+.fraudguard-btn-secondary {
+  background: #f5f5f5;
+  color: #333;
+}
+
+.fraudguard-btn-secondary:hover {
+  background: #e0e0e0;
+}
+
+.fraudguard-btn-danger {
+  background: #f44336;
+  color: white;
+}
+
+.fraudguard-btn-danger:hover {
+  background: #d32f2f;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 8px rgba(244, 67, 54, 0.3);
+}
+
+/* Responsive design */
+@media (max-width: 600px) {
+  .fraudguard-popup-content {
+    width: 95%;
+    max-height: 95vh;
+  }
+  
+  .fraudguard-popup-actions {
+    flex-direction: column;
+  }
+  
+  .fraudguard-btn {
+    width: 100%;
+  }
+}
+
+/* Animation for popup appearance */
+@keyframes fraudguard-slide-in {
+  from {
+    transform: translateY(-50px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+#fraudguard-warning-popup.fraudguard-show .fraudguard-popup-content {
+  animation: fraudguard-slide-in 0.3s ease;
+}

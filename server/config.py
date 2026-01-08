@@ -23,8 +23,8 @@ class Settings(BaseSettings):
     suspicious_threshold: int = 70
     dangerous_threshold: int = 100
     
-    # CORS configuration
-    cors_origins: list[str] = ["chrome-extension://*"]
+    # CORS configuration - Allow all origins for Chrome extensions
+    cors_origins: list[str] = ["*"]
     
     class Config:
         env_file = ".env"

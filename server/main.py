@@ -26,8 +26,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialize fraud detector
-fraud_detector = FraudDetector()
+# Initialize fraud detector with configurable thresholds
+fraud_detector = FraudDetector(
+    safe_threshold=settings.safe_threshold,
+    suspicious_threshold=settings.suspicious_threshold,
+)
 
 
 @app.get("/")
@@ -57,26 +60,15 @@ async def analyze_url(request: AnalyzeRequest):
     Returns:
         AnalyzeResponse with risk score, level, signals, and recommendations
     """
+    url = str(request.url)
+    
     try:
-        # Validate URL format
-        if not request.url.startswith(("http://", "https://")):
-            raise HTTPException(
-                status_code=400,
-                detail="URL must start with http:// or https://"
-            )
-        
-        # Perform fraud detection analysis
-        risk_score, signals, explanation = fraud_detector.analyze_url(request.url)
-        
-        # Determine risk level
+        risk_score, signals, explanation = fraud_detector.analyze_url(url)
         risk_level = fraud_detector.get_risk_level(risk_score)
-        
-        # Get recommendation
         recommendation = fraud_detector.get_recommendation(risk_level)
         
-        # Build response
         response = AnalyzeResponse(
-            url=request.url,
+            url=url,
             risk_score=round(risk_score, 2),
             risk_level=risk_level,
             signals=signals,

@@ -15,7 +15,7 @@ class RiskLevel(str, Enum):
 
 class AnalyzeRequest(BaseModel):
     """Request model for URL analysis endpoint."""
-    url: str = Field(..., description="The URL to analyze for fraud risk")
+    url: HttpUrl = Field(..., description="The URL to analyze for fraud risk")
     
     class Config:
         json_schema_extra = {

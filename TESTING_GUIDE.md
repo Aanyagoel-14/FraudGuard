@@ -16,7 +16,7 @@ pwd
 pip install -r server/requirements.txt
 
 # Start the server (from project root!)
-uvicorn server.main:app --reload --host 0.0.0.0 --port 8000
+python -m uvicorn server.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
 **✅ You should see:**
@@ -58,7 +58,7 @@ INFO:     Application startup complete.
 1. Open Chrome
 2. Go to: `chrome://extensions/`
 3. Enable **"Developer mode"** (toggle in top-right)
-4. Click **"Load unpacked"**
+4. Click **"Load unpacked"** 
 5. Navigate to: `/Users/aanyagoel/Desktop/FraudGuard/extension`
 6. Click **"Select"**
 
@@ -158,7 +158,7 @@ This should match your backend URL.
 
 **Very Suspicious (definitely popup):**
 - `https://secure-login-paypa1.com/login` (if domain exists)
-- `https://verify-account-chase.com` (if domain exists)
+- `https://verify-account-chase.com`      (if domain exists)
 
 ---
 

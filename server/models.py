@@ -11,6 +11,10 @@ class RiskLevel(str, Enum):
     SAFE = "Safe"
     SUSPICIOUS = "Suspicious"
     DANGEROUS = "Dangerous"
+    
+    def __str__(self) -> str:
+        """Return the string value of the enum."""
+        return self.value
 
 
 class AnalyzeRequest(BaseModel):

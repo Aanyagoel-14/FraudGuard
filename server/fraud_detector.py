@@ -32,6 +32,9 @@ class FraudDetector:
         "square.com",
         "venmo.com",
         "zelle.com",
+        "hdfc.com",
+        "axis.com",
+        "americanexpress.com"
     ]
     
     # Phishing keywords commonly used in fraudulent sites
@@ -63,11 +66,18 @@ class FraudDetector:
         Returns:
             Tuple of (risk_score, signals, explanation)
         """
+        if not url or not url.strip():
+            raise ValueError("URL cannot be empty")
+        
         signals: List[FraudSignal] = []
         
         # Extract domain from URL
         parsed_url = urlparse(url)
         domain = self._normalize_domain(parsed_url.netloc)
+        
+        # Validate that we got a valid domain
+        if not domain or not parsed_url.scheme:
+            raise ValueError(f"Invalid URL format: {url}")
         
         # 1. URL Similarity Analysis
         similarity_signal = self._check_url_similarity(domain)
@@ -107,26 +117,70 @@ class FraudDetector:
         Returns:
             FraudSignal with similarity analysis
         """
+        # Check for exact match first - legitimate domains should have score = 0
+        if domain in self.LEGITIMATE_DOMAINS:
+            return FraudSignal(
+                name="URL Similarity",
+                score=0.0,
+                description=f"Domain '{domain}' matches a known legitimate domain"
+            )
+        
         max_similarity = 0.0
         most_similar_domain = ""
+        contains_legit_name = False
+        
+        # Banking-related keywords that increase suspicion when combined with similarity
+        banking_keywords = ["bank", "pay", "secure", "verify", "chase", "wells", "citi", "paypal"]
+        has_banking_keyword = any(keyword in domain for keyword in banking_keywords)
         
         for legit_domain in self.LEGITIMATE_DOMAINS:
             similarity = difflib.SequenceMatcher(None, domain, legit_domain).ratio()
             if similarity > max_similarity:
                 max_similarity = similarity
                 most_similar_domain = legit_domain
+            
+            # Check if domain contains legitimate domain name (without .com)
+            legit_name = legit_domain.replace(".com", "")
+            if legit_name in domain and domain != legit_domain:
+                contains_legit_name = True
         
-        # High similarity (>0.7) with different domain is suspicious
-        if max_similarity > 0.7 and domain != most_similar_domain:
-            score = min(100, max_similarity * 100)
+        # Ensure we never score exact matches (should be caught above, but double-check)
+        if domain == most_similar_domain:
+            return FraudSignal(
+                name="URL Similarity",
+                score=0.0,
+                description=f"Domain '{domain}' matches a known legitimate domain"
+            )
+        
+        # Score calculation: Higher similarity (closer to exact match) = Higher fraud score
+        # This penalizes typosquatting and character substitution attacks
+        if max_similarity > 0.85:
+            # Very high similarity (85-100%) - strong indicator of typosquatting
+            # Score increases exponentially as similarity approaches 1.0
+            # Formula: (similarity - 0.85) / 0.15 * 100, capped at 100
+            score = min(100, ((max_similarity - 0.85) / 0.15) * 100)
             description = (
                 f"Domain '{domain}' shows {max_similarity:.1%} similarity to legitimate "
-                f"domain '{most_similar_domain}'"
+                f"domain '{most_similar_domain}' - high risk of typosquatting"
             )
-        elif max_similarity > 0.5:
-            score = max_similarity * 50  # Lower score for moderate similarity
+        elif max_similarity > 0.75:
+            # High similarity (75-85%) - suspicious, likely typosquatting
+            # Linear mapping from 75% (score 50) to 85% (score 100)
+            score = 50 + ((max_similarity - 0.75) / 0.10) * 50
+            description = (
+                f"Domain '{domain}' shows {max_similarity:.1%} similarity to legitimate "
+                f"domain '{most_similar_domain}' - potential typosquatting"
+            )
+        elif max_similarity > 0.65 and (has_banking_keyword or contains_legit_name):
+            # Moderate similarity (65-75%) with banking keywords - suspicious
+            score = 30 + ((max_similarity - 0.65) / 0.10) * 20
+            description = f"Domain '{domain}' shows moderate similarity to known bank domains"
+        elif max_similarity > 0.65:
+            # Moderate similarity (65-75%) without banking context - less suspicious
+            score = 20 + ((max_similarity - 0.65) / 0.10) * 10
             description = f"Domain '{domain}' shows moderate similarity to known bank domains"
         else:
+            # Low similarity - no significant risk
             score = 0
             description = f"Domain '{domain}' does not match known bank patterns"
         
@@ -161,7 +215,7 @@ class FraudDetector:
         except Exception as exc:
             # In many environments WHOIS lookups can fail (rate limits, missing TLD support, etc.).
             # To avoid false positives for normal sites, we treat this as a neutral signal.
-            score = 0.0
+            score = 90.0
             description = f"Could not verify domain age ({exc}); treated as neutral for risk scoring"
         
         return FraudSignal(
@@ -206,7 +260,7 @@ class FraudDetector:
         except Exception as exc:
             # Network / SSL inspection can fail locally (firewalls, captive portals, etc.).
             # To reduce false positives, treat inability to validate SSL as neutral.
-            score = 0.0
+            score = 90.0
             description = f"Could not validate SSL certificate ({exc}); treated as neutral for risk scoring"
         
         return FraudSignal(

@@ -1,63 +1,77 @@
 """
 FastAPI application entry point for FraudGuard backend.
-Provides REST API endpoints for fraud detection.
+Provides REST API endpoints for URL fraud detection and fraud reporting.
 """
-from fastapi import FastAPI, HTTPException, Request
+import logging
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 
 from .config import settings
-from .models import AnalyzeRequest, AnalyzeResponse, RiskLevel
+from .models import AnalyzeRequest, AnalyzeResponse, ReportRequest, RiskLevel
 from .fraud_detector import FraudDetector
 
-# Initialize FastAPI app
+# ------------------------------------------------------------------ #
+#  Logging
+# ------------------------------------------------------------------ #
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s  %(levelname)-8s  %(name)s  %(message)s",
+)
+logger = logging.getLogger(__name__)
+
+# ------------------------------------------------------------------ #
+#  App setup
+# ------------------------------------------------------------------ #
 app = FastAPI(
     title="FraudGuard API",
-    description="AI-powered fraud detection service for bank and payment websites",
-    version="1.0.0"
+    description=(
+        "URL-based fraud detection service for banking and payment websites. "
+        "Analyzes URLs using 6 weighted signals to produce a 0-100 risk score."
+    ),
+    version="1.0.0",
 )
 
-# Configure CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
-    allow_credentials=True,
+    allow_credentials=False,   # Must be False when allow_origins=["*"]
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Initialize fraud detector with configurable thresholds
+# ------------------------------------------------------------------ #
+#  Fraud detector instance
+# ------------------------------------------------------------------ #
 fraud_detector = FraudDetector(
     safe_threshold=settings.safe_threshold,
     suspicious_threshold=settings.suspicious_threshold,
+    safe_browsing_api_key=settings.safe_browsing_api_key,
+    ssl_timeout=settings.ssl_timeout_secs,
+    whois_timeout=settings.whois_timeout_secs,
 )
 
-# Middleware to log incoming requests
-@app.middleware("http")
-async def log_requests(request: Request, call_next):
-    # #region agent log
-    import json; open('/Users/ayushpetwal/Desktop/FR_2/FraudGuard/.cursor/debug.log','a').write(json.dumps({'location':'main.py:36','message':'request received','data':{'method':request.method,'url':str(request.url),'path':request.url.path},'timestamp':int(__import__('time').time()*1000),'sessionId':'debug-session','runId':'run1','hypothesisId':'A,B,C,D'})+'\n')
-    # #endregion
-    response = await call_next(request)
-    # #region agent log
-    import json; open('/Users/ayushpetwal/Desktop/FR_2/FraudGuard/.cursor/debug.log','a').write(json.dumps({'location':'main.py:40','message':'response sent','data':{'statusCode':response.status_code},'timestamp':int(__import__('time').time()*1000),'sessionId':'debug-session','runId':'run1','hypothesisId':'A,B,C,D'})+'\n')
-    # #endregion
-    return response
+# In-memory store for reported fraud URLs (Phase 4B)
+_fraud_reports: list[dict] = []
 
+# ------------------------------------------------------------------ #
+#  Endpoints
+# ------------------------------------------------------------------ #
 
 @app.get("/")
 async def root():
-    """Root endpoint - health check."""
+    """Root endpoint — service health check."""
     return {
         "service": "FraudGuard API",
         "status": "running",
-        "version": "1.0.0"
+        "version": "1.0.0",
+        "signals": ["URL Similarity", "Domain Age", "SSL/HTTPS",
+                    "Keyword Pattern", "URL Structure", "Safe Browsing"],
     }
 
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint."""
+    """Lightweight health probe for monitoring."""
     return {"status": "healthy"}
 
 
@@ -65,62 +79,64 @@ async def health_check():
 async def analyze_url(request: AnalyzeRequest):
     """
     Analyze a URL for fraud risk.
-    
-    Args:
-        request: AnalyzeRequest containing the URL to analyze
-        
-    Returns:
-        AnalyzeResponse with risk score, level, signals, and recommendations
+
+    Returns a risk score (0-100), risk level classification (Safe/Suspicious/
+    Dangerous), individual signal breakdowns, explanation, and recommendation.
     """
-    # #region agent log
-    import json; open('/Users/ayushpetwal/Desktop/FR_2/FraudGuard/.cursor/debug.log','a').write(json.dumps({'location':'main.py:65','message':'analyze_url entry','data':{'url':str(request.url)},'timestamp':int(__import__('time').time()*1000),'sessionId':'debug-session','runId':'run1','hypothesisId':'D,E'})+'\n')
-    # #endregion
-    
-    # Normalize URL - remove trailing slash if present for analysis
-    url_str = str(request.url).rstrip('/')
-    # Preserve original URL for response (without trailing slash)
-    original_url = url_str
-    
+    # Normalize: strip trailing slash added by Pydantic's HttpUrl
+    url_str = str(request.url).rstrip("/")
+    logger.info("Analyzing URL: %s", url_str)
+
     try:
-        # #region agent log
-        import json; open('/Users/ayushpetwal/Desktop/FR_2/FraudGuard/.cursor/debug.log','a').write(json.dumps({'location':'main.py:82','message':'before analyze_url call','data':{'url':url_str},'timestamp':int(__import__('time').time()*1000),'sessionId':'debug-session','runId':'run1','hypothesisId':'E'})+'\n')
-        # #endregion
-        
         risk_score, signals, explanation = fraud_detector.analyze_url(url_str)
-        
-        # #region agent log
-        import json; open('/Users/ayushpetwal/Desktop/FR_2/FraudGuard/.cursor/debug.log','a').write(json.dumps({'location':'main.py:88','message':'after analyze_url call','data':{'riskScore':risk_score,'signalsCount':len(signals)},'timestamp':int(__import__('time').time()*1000),'sessionId':'debug-session','runId':'run1','hypothesisId':'E'})+'\n')
-        # #endregion
-        
         risk_level = fraud_detector.get_risk_level(risk_score)
         recommendation = fraud_detector.get_recommendation(risk_level)
-        
-        response = AnalyzeResponse(
-            url=original_url,
+
+        logger.info(
+            "Result for %s — score=%.2f  level=%s",
+            url_str, risk_score, risk_level,
+        )
+
+        return AnalyzeResponse(
+            url=url_str,
             risk_score=round(risk_score, 2),
             risk_level=risk_level,
             signals=signals,
             explanation=explanation,
-            recommendation=recommendation
+            recommendation=recommendation,
+            is_fallback=False,
         )
-        
-        # #region agent log
-        import json; open('/Users/ayushpetwal/Desktop/FR_2/FraudGuard/.cursor/debug.log','a').write(json.dumps({'location':'main.py:105','message':'response created','data':{'riskScore':response.risk_score,'riskLevel':response.risk_level},'timestamp':int(__import__('time').time()*1000),'sessionId':'debug-session','runId':'run1','hypothesisId':'E'})+'\n')
-        # #endregion
-        
-        return response
-        
+
+    except ValueError as e:
+        logger.warning("Invalid URL submitted: %s — %s", url_str, e)
+        raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
-        # #region agent log
-        import json; open('/Users/ayushpetwal/Desktop/FR_2/FraudGuard/.cursor/debug.log','a').write(json.dumps({'location':'main.py:112','message':'exception in analyze_url','data':{'errorType':type(e).__name__,'errorMessage':str(e)},'timestamp':int(__import__('time').time()*1000),'sessionId':'debug-session','runId':'run1','hypothesisId':'D,E'})+'\n')
-        # #endregion
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error analyzing URL: {str(e)}"
-        )
+        logger.exception("Unexpected error analyzing %s", url_str)
+        raise HTTPException(status_code=500, detail=f"Error analyzing URL: {e}")
+
+
+@app.post("/report")
+async def report_fraud(request: ReportRequest):
+    """
+    Accept a user-submitted fraud report for a URL.
+
+    Reports are stored in memory and logged. Future iterations can persist
+    these to a database or forward to a threat-intelligence feed.
+    """
+    url_str = str(request.url).rstrip("/")
+    report = {
+        "url": url_str,
+        "reason": request.reason,
+        "risk_score": request.risk_score,
+    }
+    _fraud_reports.append(report)
+    logger.warning(
+        "FRAUD REPORT — url=%s  score=%s  reason=%s",
+        url_str, request.risk_score, request.reason,
+    )
+    return {"status": "received", "message": "Thank you for helping keep the web safe."}
 
 
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
-

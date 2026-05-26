@@ -5,8 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>FraudGuard</title>
   <style>
+    * { box-sizing: border-box; }
     body {
-      width: 350px;
+      width: 360px;
       padding: 0;
       margin: 0;
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
@@ -14,109 +15,183 @@
     .header {
       background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
       color: white;
-      padding: 20px;
-      text-align: center;
+      padding: 18px 20px 14px;
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
     }
-    .header h1 {
+    .header-title h1 {
       margin: 0;
-      font-size: 24px;
-      font-weight: 600;
+      font-size: 22px;
+      font-weight: 700;
     }
-    .header p {
-      margin: 5px 0 0 0;
-      font-size: 12px;
-      opacity: 0.9;
+    .header-title p {
+      margin: 3px 0 0;
+      font-size: 11px;
+      opacity: 0.85;
+    }
+    /* Connection status pill */
+    .connection-pill {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 11px;
+      font-weight: 500;
+      padding: 4px 10px;
+      border-radius: 12px;
+      background: rgba(255,255,255,0.15);
+      margin-top: 2px;
+    }
+    .connection-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #aaa;
+      flex-shrink: 0;
+    }
+    .connection-pill.online  .connection-dot { background: #69f0ae; }
+    .connection-pill.offline .connection-dot { background: #ff5252; animation: blink 1s infinite; }
+    .connection-pill.checking .connection-dot { background: #ffd740; }
+    @keyframes blink {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: 0.3; }
     }
     .content {
-      padding: 20px;
+      padding: 16px 18px;
     }
+    /* Risk status block */
     .status {
-      text-align: center;
-      padding: 15px;
+      padding: 14px 16px;
       background: #f5f5f5;
-      border-radius: 8px;
-      margin-bottom: 15px;
+      border-radius: 10px;
+      margin-bottom: 12px;
+      transition: background 0.3s ease;
     }
-    .status.active {
-      background: #e8f5e9;
-      color: #2e7d32;
+    .status-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 4px;
     }
     .status-text {
       font-size: 14px;
-      font-weight: 500;
+      font-weight: 600;
     }
-    .current-url {
+    .risk-score-badge {
+      font-size: 12px;
+      font-weight: 700;
+      padding: 2px 8px;
+      border-radius: 10px;
+      background: rgba(0,0,0,0.08);
+    }
+    .status-explanation {
       font-size: 12px;
       color: #666;
-      word-break: break-all;
-      margin-top: 10px;
-      padding: 10px;
-      background: #f9f9f9;
-      border-radius: 4px;
+      margin-top: 5px;
+      line-height: 1.4;
     }
+    /* URL display */
+    .current-url {
+      font-size: 11px;
+      color: #888;
+      word-break: break-all;
+      margin-bottom: 12px;
+      padding: 8px 10px;
+      background: #f9f9f9;
+      border-radius: 6px;
+      border: 1px solid #eee;
+    }
+    .current-url-label {
+      font-weight: 600;
+      color: #555;
+      display: block;
+      margin-bottom: 3px;
+    }
+    /* Actions */
     .actions {
       display: flex;
       flex-direction: column;
-      gap: 10px;
-      margin-top: 15px;
+      gap: 8px;
     }
     .btn {
       padding: 10px 15px;
       border: none;
-      border-radius: 6px;
-      font-size: 14px;
-      font-weight: 500;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 600;
       cursor: pointer;
-      transition: all 0.2s;
+      transition: all 0.18s;
+      letter-spacing: 0.1px;
+    }
+    .btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
     }
     .btn-primary {
       background: #667eea;
       color: white;
     }
-    .btn-primary:hover {
+    .btn-primary:hover:not(:disabled) {
       background: #5568d3;
+      transform: translateY(-1px);
+      box-shadow: 0 4px 10px rgba(102,126,234,0.35);
     }
     .btn-secondary {
-      background: #f5f5f5;
-      color: #333;
+      background: #f0f0f0;
+      color: #444;
     }
-    .btn-secondary:hover {
+    .btn-secondary:hover:not(:disabled) {
       background: #e0e0e0;
     }
     .footer {
-      padding: 15px;
-      text-align: center;
-      font-size: 11px;
-      color: #999;
+      padding: 10px 18px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 10px;
+      color: #bbb;
       border-top: 1px solid #eee;
     }
+    .footer-version { font-weight: 600; }
+    .footer-last-check { text-align: right; }
   </style>
 </head>
 <body>
   <div class="header">
-    <h1>🛡️ FraudGuard</h1>
-    <p>AI-Powered Fraud Detection</p>
+    <div class="header-title">
+      <h1>🛡️ FraudGuard</h1>
+      <p>Banking &amp; Payment Fraud Detection</p>
+    </div>
+    <div class="connection-pill checking" id="connectionPill">
+      <div class="connection-dot"></div>
+      <span id="connectionLabel">Checking…</span>
+    </div>
   </div>
-  
+
   <div class="content">
     <div class="status" id="status">
-      <div class="status-text">Monitoring active tab...</div>
+      <div class="status-header">
+        <span class="status-text" id="statusText">Monitoring active tab…</span>
+        <span class="risk-score-badge" id="scoreBadge" style="display:none"></span>
+      </div>
+      <div class="status-explanation" id="statusExplanation"></div>
     </div>
-    
+
     <div class="current-url" id="currentUrl">
-      Loading...
+      <span class="current-url-label">Current page</span>
+      Loading…
     </div>
-    
+
     <div class="actions">
-      <button class="btn btn-primary" id="analyzeBtn">Analyze Current Page</button>
-      <button class="btn btn-secondary" id="settingsBtn">Settings</button>
+      <button class="btn btn-primary" id="analyzeBtn">🔍 Analyze Current Page</button>
     </div>
   </div>
-  
+
   <div class="footer">
-    FraudGuard v1.0.0
+    <span class="footer-version">FraudGuard v1.0.0</span>
+    <span class="footer-last-check" id="lastCheck"></span>
   </div>
-  
+
   <script src="popup.js"></script>
 </body>
 </html>

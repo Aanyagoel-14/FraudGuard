@@ -38,14 +38,13 @@ class TestSettings:
             test_settings = Settings()
             assert "*" in test_settings.cors_origins
     
-    def test_default_azure_openai_settings(self):
-        """Test default Azure OpenAI settings."""
+    def test_default_optional_api_settings(self):
+        """Test default values for optional API settings (Safe Browsing, timeouts)."""
         with patch.dict(os.environ, {}, clear=True):
             test_settings = Settings()
-            assert test_settings.azure_openai_endpoint is None
-            assert test_settings.azure_openai_key is None
-            assert test_settings.azure_openai_deployment is None
-            assert test_settings.azure_openai_api_version == "2023-12-01-preview"
+            assert test_settings.safe_browsing_api_key is None
+            assert test_settings.whois_timeout_secs == 5
+            assert test_settings.ssl_timeout_secs == 5
     
     def test_environment_variable_override(self):
         """Test that environment variables override defaults."""

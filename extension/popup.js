@@ -1,151 +1,195 @@
 /**
- * Popup Script for FraudGuard Extension
- * Handles UI interactions in the extension popup
+ * FraudGuard — Toolbar Popup Script
+ *
+ * Shows the current tab's URL, the backend connection status, and the
+ * latest risk analysis result. Lets the user manually trigger an analysis.
  */
 
+// ------------------------------------------------------------------ //
+//  Risk level → colour mapping
+// ------------------------------------------------------------------ //
+
+const LEVEL_COLORS = {
+  Safe:       { bg: '#e8f5e9', text: '#2e7d32', badge: '#4caf50' },
+  Suspicious: { bg: '#fff3e0', text: '#e65100', badge: '#ff9800' },
+  Dangerous:  { bg: '#ffebee', text: '#c62828', badge: '#f44336' },
+  Fallback:   { bg: '#fff8e1', text: '#795548', badge: '#ffeb3b' },
+  Default:    { bg: '#f5f5f5', text: '#333',    badge: '#999'    },
+};
+
+// ------------------------------------------------------------------ //
+//  DOM helpers
+// ------------------------------------------------------------------ //
+
+const $ = id => document.getElementById(id);
+
+// ------------------------------------------------------------------ //
+//  Connection status
+// ------------------------------------------------------------------ //
+
 /**
- * Get the current active tab
+ * Ping the background worker which in turn hits /health on the backend.
+ * Updates the connection pill UI with the result.
  */
+function checkConnection() {
+  const pill  = $('connectionPill');
+  const label = $('connectionLabel');
+
+  pill.className  = 'connection-pill checking';
+  label.textContent = 'Checking…';
+
+  chrome.runtime.sendMessage({ action: 'ping' }, (response) => {
+    if (chrome.runtime.lastError || !response) {
+      pill.className  = 'connection-pill offline';
+      label.textContent = 'Offline';
+      return;
+    }
+    if (response.online) {
+      pill.className  = 'connection-pill online';
+      label.textContent = 'Server online';
+    } else {
+      pill.className  = 'connection-pill offline';
+      label.textContent = 'Server offline';
+    }
+  });
+}
+
+// ------------------------------------------------------------------ //
+//  Current tab
+// ------------------------------------------------------------------ //
+
 async function getCurrentTab() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   return tab;
 }
 
-/**
- * Update popup UI with current tab information
- */
+// ------------------------------------------------------------------ //
+//  Popup state
+// ------------------------------------------------------------------ //
+
 async function updatePopup() {
   const tab = await getCurrentTab();
-  const urlElement = document.getElementById('currentUrl');
-  const statusElement = document.getElementById('status');
-  
-  if (tab && tab.url) {
-    urlElement.textContent = tab.url;
-    
-    // Check if URL is valid (not chrome:// or extension://)
-    if (tab.url.startsWith('http://') || tab.url.startsWith('https://')) {
-      statusElement.className = 'status active';
-      statusElement.querySelector('.status-text').textContent = '✓ Monitoring active';
-    } else {
-      statusElement.className = 'status';
-      statusElement.querySelector('.status-text').textContent = 'Cannot analyze this page';
-    }
+  const urlEl = $('currentUrl');
+
+  if (!tab || !tab.url) {
+    urlEl.innerHTML = '<span class="current-url-label">Current page</span>No active tab';
+    setStatus('No active tab', '', 'Default');
+    return;
+  }
+
+  urlEl.innerHTML = `<span class="current-url-label">Current page</span>${escapeHtml(tab.url)}`;
+
+  if (!tab.url.startsWith('http://') && !tab.url.startsWith('https://')) {
+    setStatus('Cannot analyze this page type', '', 'Default');
+    $('analyzeBtn').disabled = true;
   } else {
-    urlElement.textContent = 'No active tab found';
-    statusElement.className = 'status';
-    statusElement.querySelector('.status-text').textContent = 'No active tab';
+    $('analyzeBtn').disabled = false;
+    setStatus('Monitoring active', '', 'Default');
   }
 }
 
-/**
- * Analyze current page
- */
+// ------------------------------------------------------------------ //
+//  Manual analysis
+// ------------------------------------------------------------------ //
+
 async function analyzeCurrentPage() {
   const tab = await getCurrentTab();
-  
-  if (!tab || !tab.url) {
-    alert('No active tab found');
+
+  if (!tab?.url?.startsWith('http')) {
+    setStatus('Cannot analyze this page type', '', 'Default');
     return;
   }
-  
-  if (!tab.url.startsWith('http://') && !tab.url.startsWith('https://')) {
-    alert('Cannot analyze this type of page');
-    return;
-  }
-  
-  // Update status
-  const statusElement = document.getElementById('status');
-  statusElement.className = 'status';
-  statusElement.querySelector('.status-text').textContent = 'Analyzing...';
-  
-  // Send message to background worker
-  chrome.runtime.sendMessage(
-    { action: 'analyze', url: tab.url },
-    (response) => {
-      if (chrome.runtime.lastError) {
-        statusElement.className = 'status';
-        statusElement.querySelector('.status-text').textContent = 'Error: ' + chrome.runtime.lastError.message;
-        return;
-      }
-      
-      if (response && response.success) {
-        displayAnalysisResult(response.data);
-      } else {
-        statusElement.className = 'status';
-        statusElement.querySelector('.status-text').textContent = 'Analysis failed';
-      }
+
+  $('analyzeBtn').disabled  = true;
+  $('analyzeBtn').textContent = '⏳ Analyzing…';
+  setStatus('Analyzing…', '', 'Default');
+
+  chrome.runtime.sendMessage({ action: 'analyze', url: tab.url }, (response) => {
+    $('analyzeBtn').disabled  = false;
+    $('analyzeBtn').textContent = '🔍 Analyze Current Page';
+
+    if (chrome.runtime.lastError) {
+      setStatus('Error: ' + chrome.runtime.lastError.message, '', 'Default');
+      return;
     }
-  );
+
+    if (response?.success) {
+      displayResult(response.data);
+    } else {
+      setStatus('Analysis failed', response?.error ?? '', 'Default');
+    }
+  });
 }
 
-/**
- * Display analysis result in popup
- */
-function displayAnalysisResult(analysis) {
-  const statusElement = document.getElementById('status');
-  const riskLevel = analysis.risk_level || 'Safe';
-  const riskScore = analysis.risk_score || 0;
-  
-  // Update status based on risk level
-  statusElement.className = 'status';
-  
-  let statusText = '';
-  let statusColor = '';
-  
-  if (riskLevel === 'Safe') {
-    statusColor = '#4caf50';
-    statusText = `✓ Safe (Score: ${riskScore.toFixed(1)})`;
-  } else if (riskLevel === 'Suspicious') {
-    statusColor = '#ff9800';
-    statusText = `⚠ Suspicious (Score: ${riskScore.toFixed(1)})`;
+// ------------------------------------------------------------------ //
+//  Result display
+// ------------------------------------------------------------------ //
+
+function displayResult(analysis) {
+  const level      = analysis.risk_level ?? 'Safe';
+  const score      = analysis.risk_score ?? 0;
+  const isFallback = analysis.is_fallback === true;
+
+  if (isFallback) {
+    setStatus('⚠ Server unavailable', analysis.explanation ?? '', 'Fallback', null);
+    $('lastCheck').textContent = 'Last check: now (degraded)';
+    return;
+  }
+
+  const icons = { Safe: '✓', Suspicious: '⚠', Dangerous: '⛔' };
+  const icon  = icons[level] ?? '';
+  const label = `${icon} ${level} — Score ${score.toFixed(1)}/100`;
+
+  setStatus(label, analysis.explanation ?? '', level, score);
+  $('lastCheck').textContent = `Last check: ${new Date().toLocaleTimeString()}`;
+}
+
+function setStatus(text, explanation, level, score = null) {
+  const colors  = LEVEL_COLORS[level] ?? LEVEL_COLORS.Default;
+  const statusEl = $('status');
+  const scoreEl  = $('scoreBadge');
+
+  $('statusText').textContent       = text;
+  $('statusExplanation').textContent = explanation;
+  statusEl.style.background         = colors.bg;
+  statusEl.style.color              = colors.text;
+
+  if (score !== null) {
+    scoreEl.style.display          = 'inline-block';
+    scoreEl.textContent            = Math.round(score);
+    scoreEl.style.background       = colors.badge;
+    scoreEl.style.color            = 'white';
   } else {
-    statusColor = '#f44336';
-    statusText = `⚠️ Dangerous (Score: ${riskScore.toFixed(1)})`;
-  }
-  
-  statusElement.style.background = statusColor;
-  statusElement.style.color = 'white';
-  statusElement.querySelector('.status-text').textContent = statusText;
-  
-  // Show explanation if available
-  if (analysis.explanation) {
-    const explanation = document.createElement('div');
-    explanation.style.marginTop = '10px';
-    explanation.style.fontSize = '12px';
-    explanation.style.opacity = '0.9';
-    explanation.textContent = analysis.explanation;
-    
-    // Remove existing explanation if any
-    const existing = statusElement.querySelector('.explanation');
-    if (existing) existing.remove();
-    
-    explanation.className = 'explanation';
-    statusElement.appendChild(explanation);
+    scoreEl.style.display = 'none';
   }
 }
 
-/**
- * Open settings (placeholder)
- */
-function openSettings() {
-  // TODO: Implement settings page
-  alert('Settings coming soon!');
+// ------------------------------------------------------------------ //
+//  XSS helper
+// ------------------------------------------------------------------ //
+
+function escapeHtml(str) {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
 }
 
-/**
- * Initialize popup
- */
+// ------------------------------------------------------------------ //
+//  Initialisation
+// ------------------------------------------------------------------ //
+
 async function init() {
-  // Update popup on load
   await updatePopup();
-  
-  // Setup event listeners
-  document.getElementById('analyzeBtn').addEventListener('click', analyzeCurrentPage);
-  document.getElementById('settingsBtn').addEventListener('click', openSettings);
-  
-  // Update popup every 2 seconds to reflect tab changes
-  setInterval(updatePopup, 2000);
+  checkConnection();
+
+  $('analyzeBtn').addEventListener('click', analyzeCurrentPage);
+
+  // Refresh popup state every 3 seconds to pick up tab changes
+  setInterval(updatePopup, 3000);
+  // Recheck backend connection every 15 seconds
+  setInterval(checkConnection, 15000);
 }
 
-// Initialize when popup opens
 init();

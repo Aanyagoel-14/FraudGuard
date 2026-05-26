@@ -1,141 +1,285 @@
 /**
- * Background Service Worker for FraudGuard
- * Handles API communication with backend and manages fraud detection state
+ * FraudGuard — Background Service Worker
+ *
+ * Responsibilities:
+ *  - Receive analyze/report messages from content scripts and the popup
+ *  - Call the FraudGuard backend API
+ *  - Cache results in chrome.storage.local (1-hour TTL)
+ *  - Keep the toolbar badge updated with the current site's risk level
+ *  - Surface a "backend unavailable" warning when the server is unreachable
  */
 
-// Backend API URL - Update this to your backend URL
+// ------------------------------------------------------------------ //
+//  Configuration
+// ------------------------------------------------------------------ //
+
+/** Base URL of the FraudGuard backend. Change this when deploying remotely. */
 const BACKEND_URL = 'http://localhost:8000';
 
-// Risk thresholds matching backend configuration
-const RISK_THRESHOLDS = {
-  SAFE: 30,
-  SUSPICIOUS: 70,
-  DANGEROUS: 100
+/** Cache entries older than this are re-fetched. */
+const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
+
+/** Badge colours matching the risk classification system. */
+const BADGE_COLORS = {
+  safe:        '#4caf50',   // green
+  suspicious:  '#ff9800',   // orange
+  dangerous:   '#f44336',   // red
+  fallback:    '#ffeb3b',   // yellow — backend unavailable
+  clear:       '#888888',   // grey — non-analyzable page
 };
 
-// Cache to store analysis results (URL -> analysis result)
-const analysisCache = new Map();
+// ------------------------------------------------------------------ //
+//  Cache helpers  (chrome.storage.local — survives service worker restart)
+// ------------------------------------------------------------------ //
 
 /**
- * Analyze a URL by calling the backend API
- * @param {string} url - The URL to analyze
- * @returns {Promise<Object>} Analysis result with risk score and details
+ * Return a cached analysis result for the given URL if it exists and is
+ * still within the TTL window, otherwise return null.
  */
-async function analyzeUrl(url) {
-  // #region agent log
-  fetch('http://127.0.0.1:7243/ingest/b7dbe784-3ced-4b54-9c6b-2d3f908929e5', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'background.js:24', message: 'analyzeUrl entry', data: { url: url, backendUrl: BACKEND_URL }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'A,B,C' }) }).catch(() => { });
-  // #endregion
+async function getCached(url) {
+  try {
+    const key = `fg_cache_${url}`;
+    const stored = await chrome.storage.local.get(key);
+    const entry = stored[key];
+    if (entry && (Date.now() - entry.timestamp) < CACHE_TTL_MS) {
+      console.log('[FraudGuard] Cache hit:', url);
+      return entry.data;
+    }
+  } catch (err) {
+    console.warn('[FraudGuard] Cache read error:', err);
+  }
+  return null;
+}
 
-  // Check cache first
-  if (analysisCache.has(url)) {
-    console.log('[FraudGuard] Using cached result for:', url);
-    // #region agent log
-    fetch('http://127.0.0.1:7243/ingest/b7dbe784-3ced-4b54-9c6b-2d3f908929e5', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'background.js:27', message: 'cache hit', data: { url: url }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'A' }) }).catch(() => { });
-    // #endregion
-    return analysisCache.get(url);
+/**
+ * Persist an analysis result keyed by URL.
+ * Fallback results are never cached so the backend is retried immediately
+ * on the next navigation once the server recovers.
+ */
+async function setCached(url, data) {
+  if (data.is_fallback) return;
+  try {
+    const key = `fg_cache_${url}`;
+    await chrome.storage.local.set({ [key]: { data, timestamp: Date.now() } });
+  } catch (err) {
+    console.warn('[FraudGuard] Cache write error:', err);
+  }
+}
+
+/**
+ * Evict the cached result for a URL (called on tab navigation).
+ */
+async function evictCached(url) {
+  if (!url) return;
+  try {
+    await chrome.storage.local.remove(`fg_cache_${url}`);
+  } catch (err) {
+    console.warn('[FraudGuard] Cache evict error:', err);
+  }
+}
+
+// ------------------------------------------------------------------ //
+//  Badge helpers
+// ------------------------------------------------------------------ //
+
+/**
+ * Update the toolbar badge for a specific tab to reflect the analysis result.
+ * @param {number} tabId
+ * @param {object} result  AnalyzeResponse object (or fallback object)
+ */
+function updateBadge(tabId, result) {
+  if (!tabId) return;
+
+  const score = result.risk_score ?? 0;
+  const level = (result.risk_level ?? 'Safe').toLowerCase();
+  const isFallback = result.is_fallback === true;
+
+  let text = '';
+  let color = BADGE_COLORS.safe;
+
+  if (isFallback) {
+    text = '!';
+    color = BADGE_COLORS.fallback;
+  } else if (level === 'dangerous') {
+    text = String(Math.round(score));
+    color = BADGE_COLORS.dangerous;
+  } else if (level === 'suspicious') {
+    text = String(Math.round(score));
+    color = BADGE_COLORS.suspicious;
+  } else {
+    text = '';
+    color = BADGE_COLORS.safe;
   }
 
-  try {
-    console.log('[FraudGuard] Analyzing URL:', url);
+  chrome.action.setBadgeText({ text, tabId });
+  chrome.action.setBadgeBackgroundColor({ color, tabId });
+}
 
-    // #region agent log
-    const beforeFetchLog = { location: 'background.js:42', message: 'before fetch', data: { url: url, backendUrl: BACKEND_URL, endpoint: `${BACKEND_URL}/analyze` }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'A,B,C' };
-    console.log('[DEBUG LOG]', beforeFetchLog);
-    fetch('http://127.0.0.1:7243/ingest/b7dbe784-3ced-4b54-9c6b-2d3f908929e5', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(beforeFetchLog) }).catch(err => console.error('[DEBUG LOG SEND FAILED]', err));
-    // #endregion
+/**
+ * Clear the badge on a tab (used for chrome://, extension:// pages etc.).
+ */
+function clearBadge(tabId) {
+  if (!tabId) return;
+  chrome.action.setBadgeText({ text: '', tabId });
+  chrome.action.setBadgeBackgroundColor({ color: BADGE_COLORS.clear, tabId });
+}
+
+// ------------------------------------------------------------------ //
+//  Core analysis
+// ------------------------------------------------------------------ //
+
+/**
+ * Analyze a URL — check cache first, then call the backend.
+ *
+ * On backend failure returns a degraded-mode result with is_fallback:true
+ * and risk_score:70 so the content script always surfaces a warning rather
+ * than silently passing the site as safe.
+ *
+ * @param {string} url
+ * @returns {Promise<object>}  AnalyzeResponse-shaped object
+ */
+async function analyzeUrl(url) {
+  // 1. Cache check
+  const cached = await getCached(url);
+  if (cached) return cached;
+
+  // 2. Backend call
+  try {
+    console.log('[FraudGuard] Fetching analysis for:', url);
 
     const response = await fetch(`${BACKEND_URL}/analyze`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ url: url })
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url }),
     });
 
-    // #region agent log
-    fetch('http://127.0.0.1:7243/ingest/b7dbe784-3ced-4b54-9c6b-2d3f908929e5', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'background.js:45', message: 'after fetch', data: { ok: response.ok, status: response.status, statusText: response.statusText, headers: Object.fromEntries(response.headers.entries()) }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'B,C,D' }) }).catch(() => { });
-    // #endregion
-
     if (!response.ok) {
-      // #region agent log
-      fetch('http://127.0.0.1:7243/ingest/b7dbe784-3ced-4b54-9c6b-2d3f908929e5', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'background.js:48', message: 'response not ok', data: { status: response.status, statusText: response.statusText }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'D' }) }).catch(() => { });
-      // #endregion
       throw new Error(`API error: ${response.status} ${response.statusText}`);
     }
 
     const data = await response.json();
+    console.log('[FraudGuard] Analysis result:', data.risk_level, data.risk_score);
 
-    // #region agent log
-    fetch('http://127.0.0.1:7243/ingest/b7dbe784-3ced-4b54-9c6b-2d3f908929e5', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'background.js:52', message: 'response data received', data: { riskScore: data.risk_score, riskLevel: data.risk_level }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'E' }) }).catch(() => { });
-    // #endregion
-
-    // Cache the result
-    analysisCache.set(url, data);
-
-    console.log('[FraudGuard] Analysis result:', data);
+    // 3. Cache successful result
+    await setCached(url, data);
     return data;
 
   } catch (error) {
-    console.error('[FraudGuard] Error analyzing URL:', error);
-    // #region agent log
-    const errorLog = { location: 'background.js:79', message: 'fetch error caught', data: { errorName: error.name, errorMessage: error.message, errorStack: error.stack?.substring(0, 500) }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'A,B,C' };
-    console.log('[DEBUG LOG]', errorLog);
-    fetch('http://127.0.0.1:7243/ingest/b7dbe784-3ced-4b54-9c6b-2d3f908929e5', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(errorLog) }).catch(err => console.error('[DEBUG LOG SEND FAILED]', err));
-    // #endregion
+    // Backend is unreachable or returned an error.
+    // Return a HIGH-CAUTION fallback — never a safe result — so the overlay
+    // fires and the user is alerted that verification could not be completed.
+    console.error('[FraudGuard] Backend error:', error.message);
     return {
-      url: url,
-      risk_score: 0,
-      risk_level: 'Safe',
+      url,
+      risk_score: 70,
+      risk_level: 'Suspicious',
       signals: [],
-      explanation: 'Unable to analyze URL. Please check backend connection.',
-      recommendation: 'Proceed with caution.',
-      error: error.message
+      explanation:
+        '⚠️ FraudGuard could not verify this site — the analysis server is unavailable. ' +
+        'Treat this site with caution until verification can be completed.',
+      recommendation:
+        'The fraud detection server is not reachable. Avoid entering sensitive ' +
+        'financial information until the connection is restored.',
+      is_fallback: true,
+      error: error.message,
     };
   }
 }
 
 /**
- * Listen for messages from content script
+ * Submit a fraud report to the backend.
+ * @param {string} url
+ * @param {string|null} reason
+ * @param {number|null} riskScore
+ * @returns {Promise<object>}
  */
-chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  console.log('[FraudGuard] Message received:', request);
+async function reportFraud(url, reason = null, riskScore = null) {
+  try {
+    const response = await fetch(`${BACKEND_URL}/report`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url, reason, risk_score: riskScore }),
+    });
+    if (!response.ok) throw new Error(`Report API error: ${response.status}`);
+    return await response.json();
+  } catch (error) {
+    console.error('[FraudGuard] Report failed:', error.message);
+    return { status: 'error', error: error.message };
+  }
+}
 
+// ------------------------------------------------------------------ //
+//  Message listener
+// ------------------------------------------------------------------ //
+
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  const tabId = sender.tab?.id ?? null;
+
+  // --- analyze ------------------------------------------------------- //
   if (request.action === 'analyze') {
-    // Analyze the URL asynchronously
-    analyzeUrl(request.url)
+    const url = request.url;
+
+    // Reject non-HTTP URLs immediately
+    if (!url || (!url.startsWith('http://') && !url.startsWith('https://'))) {
+      sendResponse({ success: false, error: 'invalid URL' });
+      return false;
+    }
+
+    analyzeUrl(url)
       .then(result => {
+        updateBadge(tabId, result);
         sendResponse({ success: true, data: result });
       })
-      .catch(error => {
-        sendResponse({ success: false, error: error.message });
+      .catch(err => {
+        sendResponse({ success: false, error: err.message });
       });
 
-    // Return true to indicate we'll send response asynchronously
+    return true; // keep channel open for async response
+  }
+
+  // --- report -------------------------------------------------------- //
+  if (request.action === 'report') {
+    reportFraud(request.url, request.reason ?? null, request.riskScore ?? null)
+      .then(result => sendResponse({ success: true, data: result }))
+      .catch(err => sendResponse({ success: false, error: err.message }));
     return true;
   }
 
-  if (request.action === 'getAnalysis') {
-    // Return cached analysis if available
-    const cached = analysisCache.get(request.url);
-    sendResponse({ success: true, cached: cached !== undefined, data: cached });
-    return false;
+  // --- ping (popup connection check) --------------------------------- //
+  if (request.action === 'ping') {
+    fetch(`${BACKEND_URL}/health`)
+      .then(r => sendResponse({ online: r.ok }))
+      .catch(() => sendResponse({ online: false }));
+    return true;
   }
 });
 
+// ------------------------------------------------------------------ //
+//  Tab lifecycle
+// ------------------------------------------------------------------ //
+
 /**
- * Listen for tab updates to clear cache when navigating away
+ * When a tab starts loading a new URL, evict the cached result for that URL
+ * so stale data is never shown on the next analysis.
  */
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (changeInfo.status === 'loading' && tab.url) {
-    // Optionally clear cache for old URL when navigating
-    // This keeps cache fresh but allows same-page checks
+    // Evict cache so the next analysis fetches fresh data
+    evictCached(tab.url);
+
+    // Clear badge while the page loads
+    if (!tab.url.startsWith('http://') && !tab.url.startsWith('https://')) {
+      clearBadge(tabId);
+    }
   }
 });
 
-/**
- * Clear cache when extension is installed/updated
- */
+// ------------------------------------------------------------------ //
+//  Startup
+// ------------------------------------------------------------------ //
+
 chrome.runtime.onInstalled.addListener(() => {
-  console.log('[FraudGuard] Extension installed/updated');
-  analysisCache.clear();
+  console.log('[FraudGuard] Extension installed / updated.');
+  // Clear any stale cache from previous installs
+  chrome.storage.local.clear();
 });

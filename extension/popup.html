@@ -5,191 +5,322 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>FraudGuard</title>
   <style>
-    * { box-sizing: border-box; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
     body {
       width: 360px;
-      padding: 0;
-      margin: 0;
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+      background: #0d1117;
+      color: #e6edf3;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      overflow-x: hidden;
     }
+
+    /* ── Header ─────────────────────────────────────── */
     .header {
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-      color: white;
-      padding: 18px 20px 14px;
+      background: linear-gradient(135deg, #0f0f1a 0%, #1a1a2e 55%, #16213e 100%);
+      padding: 13px 18px 11px;
       display: flex;
       justify-content: space-between;
-      align-items: flex-start;
-    }
-    .header-title h1 {
-      margin: 0;
-      font-size: 22px;
-      font-weight: 700;
-    }
-    .header-title p {
-      margin: 3px 0 0;
-      font-size: 11px;
-      opacity: 0.85;
-    }
-    /* Connection status pill */
-    .connection-pill {
-      display: flex;
       align-items: center;
-      gap: 5px;
-      font-size: 11px;
-      font-weight: 500;
+      border-bottom: 1px solid #21262d;
+    }
+    .header-brand { display: flex; align-items: center; gap: 9px; }
+    .header-title { font-size: 16px; font-weight: 700; color: #e6edf3; letter-spacing: 0.2px; }
+    .header-sub   { font-size: 10px; color: #6e7681; margin-top: 1px; }
+
+    .connection-pill {
+      display: flex; align-items: center; gap: 5px;
+      font-size: 10px; font-weight: 500;
       padding: 4px 10px;
       border-radius: 12px;
-      background: rgba(255,255,255,0.15);
-      margin-top: 2px;
+      background: rgba(255,255,255,0.05);
+      border: 1px solid #30363d;
+      color: #6e7681;
     }
     .connection-dot {
-      width: 7px;
-      height: 7px;
+      width: 6px; height: 6px;
+      border-radius: 50%; background: #555; flex-shrink: 0;
+    }
+    .connection-pill.online  { color: #4caf50; border-color: #4caf5040; }
+    .connection-pill.offline { color: #f44336; border-color: #f4433640; }
+    .connection-pill.online  .connection-dot { background: #4caf50; }
+    .connection-pill.offline .connection-dot { background: #f44336; animation: blink 1s infinite; }
+    .connection-pill.checking .connection-dot { background: #ff9800; }
+
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.2} }
+
+    /* ── Gauge Zone ─────────────────────────────────── */
+    .gauge-zone {
+      display: flex; flex-direction: column; align-items: center;
+      padding: 18px 18px 12px;
+      background: #0d1117;
+      position: relative;
+    }
+
+    /* Radar sweep during scan */
+    .gauge-zone.scanning::after {
+      content: '';
+      position: absolute;
+      top: 18px;
+      width: 180px; height: 180px;
       border-radius: 50%;
-      background: #aaa;
-      flex-shrink: 0;
+      background: conic-gradient(transparent 0deg, rgba(0,180,216,0.1) 55deg, transparent 110deg);
+      animation: scanSweep 1.8s linear infinite;
+      pointer-events: none;
+      z-index: 1;
     }
-    .connection-pill.online  .connection-dot { background: #69f0ae; }
-    .connection-pill.offline .connection-dot { background: #ff5252; animation: blink 1s infinite; }
-    .connection-pill.checking .connection-dot { background: #ffd740; }
-    @keyframes blink {
-      0%, 100% { opacity: 1; }
-      50%       { opacity: 0.3; }
+    @keyframes scanSweep { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }
+
+    .gauge-svg { display: block; position: relative; z-index: 2; }
+
+    /* Pulse ring on the scan-ring SVG circle */
+    .scan-ring { opacity: 0; transition: opacity 0.3s; }
+    .gauge-zone.scanning .scan-ring {
+      opacity: 1;
+      animation: scanPulse 1.4s ease-in-out infinite;
     }
-    .content {
-      padding: 16px 18px;
+    @keyframes scanPulse {
+      0%,100% { stroke-width: 10; opacity: 0.55; }
+      50%      { stroke-width: 22; opacity: 0.08; }
     }
-    /* Risk status block */
-    .status {
-      padding: 14px 16px;
-      background: #f5f5f5;
-      border-radius: 10px;
-      margin-bottom: 12px;
-      transition: background 0.3s ease;
+
+    /* Risk label badge */
+    .risk-label {
+      margin-top: 10px;
+      font-size: 12px; font-weight: 700;
+      letter-spacing: 2.5px; text-transform: uppercase;
+      padding: 4px 18px;
+      border-radius: 20px;
+      background: #161b22;
+      color: #6e7681;
+      border: 1px solid #30363d;
+      transition: color 0.4s ease, border-color 0.4s ease, background 0.4s ease;
     }
-    .status-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 4px;
-    }
-    .status-text {
-      font-size: 14px;
-      font-weight: 600;
-    }
-    .risk-score-badge {
-      font-size: 12px;
-      font-weight: 700;
-      padding: 2px 8px;
-      border-radius: 10px;
-      background: rgba(0,0,0,0.08);
-    }
-    .status-explanation {
-      font-size: 12px;
-      color: #666;
-      margin-top: 5px;
-      line-height: 1.4;
-    }
-    /* URL display */
-    .current-url {
-      font-size: 11px;
-      color: #888;
-      word-break: break-all;
-      margin-bottom: 12px;
-      padding: 8px 10px;
-      background: #f9f9f9;
+
+    /* URL strip */
+    .url-display {
+      margin-top: 10px; width: 100%;
+      font-size: 10px; color: #6e7681;
+      background: #161b22;
+      border: 1px solid #21262d;
       border-radius: 6px;
-      border: 1px solid #eee;
+      padding: 6px 10px;
+      word-break: break-all;
+      font-family: 'SF Mono','Cascadia Code','Fira Code',monospace;
+      line-height: 1.45;
     }
-    .current-url-label {
-      font-weight: 600;
-      color: #555;
-      display: block;
+    .url-label {
+      display: block; font-size: 9px; font-weight: 600;
+      color: #444d56; text-transform: uppercase; letter-spacing: 0.9px;
       margin-bottom: 3px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     }
-    /* Actions */
-    .actions {
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
+
+    /* ── Explanation Card ───────────────────────────── */
+    .explanation-card {
+      margin: 0 18px;
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-left-width: 3px;
+      border-radius: 8px;
+      padding: 0; max-height: 0; overflow: hidden; opacity: 0;
+      transition: max-height 0.4s ease, opacity 0.35s ease,
+                  padding 0.35s ease, margin-bottom 0.4s ease,
+                  border-color 0.4s ease;
+    }
+    .explanation-card.visible {
+      max-height: 180px; opacity: 1;
+      padding: 11px 13px; margin-bottom: 10px;
+    }
+    .explanation-text {
+      font-size: 12px; color: #c9d1d9; line-height: 1.55; margin-bottom: 8px;
+    }
+    .recommendation-text {
+      font-size: 11px; color: #8b949e; line-height: 1.45;
+      padding: 5px 9px;
+      background: rgba(139,148,158,0.07);
+      border-radius: 5px;
+    }
+
+    /* ── Signals Panel ──────────────────────────────── */
+    .signals-panel {
+      margin: 0 18px;
+      max-height: 0; overflow: hidden; opacity: 0;
+      transition: max-height 0.45s ease, opacity 0.38s ease, margin-bottom 0.4s ease;
+    }
+    .signals-panel.visible {
+      max-height: 250px; opacity: 1; margin-bottom: 10px;
+    }
+    .signals-title {
+      font-size: 9px; font-weight: 700; color: #444d56;
+      text-transform: uppercase; letter-spacing: 1.1px;
+      margin-bottom: 8px;
+    }
+    .signal-row {
+      display: flex; align-items: center; gap: 8px; margin-bottom: 7px;
+    }
+    .signal-row:last-child { margin-bottom: 0; }
+    .signal-icon { width: 16px; height: 16px; flex-shrink: 0; }
+    .signal-icon svg { width: 100%; height: 100%; }
+    .signal-info { flex: 1; min-width: 0; }
+    .signal-name-row {
+      display: flex; justify-content: space-between;
+      align-items: center; margin-bottom: 3px;
+    }
+    .signal-name { font-size: 11px; color: #c9d1d9; }
+    .signal-score { font-size: 11px; font-weight: 700; flex-shrink: 0; margin-left: 6px; }
+    .signal-bar-track {
+      height: 4px; background: #21262d; border-radius: 2px; overflow: hidden;
+    }
+    .signal-bar-fill {
+      height: 100%; width: 0%;
+      border-radius: 2px;
+      transition: width 0.8s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    /* ── Action Bar ─────────────────────────────────── */
+    .action-bar {
+      display: flex; gap: 8px;
+      padding: 10px 18px 12px;
     }
     .btn {
-      padding: 10px 15px;
-      border: none;
-      border-radius: 8px;
-      font-size: 13px;
-      font-weight: 600;
+      flex: 1; padding: 9px 10px;
+      border: none; border-radius: 7px;
+      font-size: 12px; font-weight: 600;
       cursor: pointer;
-      transition: all 0.18s;
+      transition: all 0.17s;
       letter-spacing: 0.1px;
     }
-    .btn:disabled {
-      opacity: 0.5;
-      cursor: not-allowed;
-    }
+    .btn:disabled { opacity: 0.42; cursor: not-allowed; }
     .btn-primary {
-      background: #667eea;
+      background: linear-gradient(135deg, #0d7fe8, #7b2ff7);
       color: white;
     }
     .btn-primary:hover:not(:disabled) {
-      background: #5568d3;
       transform: translateY(-1px);
-      box-shadow: 0 4px 10px rgba(102,126,234,0.35);
+      box-shadow: 0 4px 14px rgba(13,127,232,0.35);
     }
-    .btn-secondary {
-      background: #f0f0f0;
-      color: #444;
+    .btn-report {
+      background: transparent;
+      color: #f44336;
+      border: 1px solid #f44336;
     }
-    .btn-secondary:hover:not(:disabled) {
-      background: #e0e0e0;
+    .btn-report:hover:not(:disabled) {
+      background: rgba(244,67,54,0.08);
+      transform: translateY(-1px);
     }
+    .btn-report.success { color: #4caf50; border-color: #4caf50; background: rgba(76,175,80,0.08); }
+    .btn-report.failed  { color: #6e7681; border-color: #6e7681; }
+
+    /* ── Footer ─────────────────────────────────────── */
     .footer {
-      padding: 10px 18px;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      font-size: 10px;
-      color: #bbb;
-      border-top: 1px solid #eee;
+      padding: 7px 18px 10px;
+      display: flex; justify-content: space-between;
+      font-size: 9px; color: #444d56;
+      border-top: 1px solid #21262d;
     }
-    .footer-version { font-weight: 600; }
-    .footer-last-check { text-align: right; }
   </style>
 </head>
 <body>
+
+  <!-- Header -->
   <div class="header">
-    <div class="header-title">
-      <h1>🛡️ FraudGuard</h1>
-      <p>Banking &amp; Payment Fraud Detection</p>
+    <div class="header-brand">
+      <svg width="26" height="26" viewBox="0 0 24 24" fill="none">
+        <defs>
+          <linearGradient id="sg" x1="3" y1="2" x2="21" y2="23" gradientUnits="userSpaceOnUse">
+            <stop offset="0%" stop-color="#00b4d8"/>
+            <stop offset="100%" stop-color="#7b2ff7"/>
+          </linearGradient>
+        </defs>
+        <path d="M12 2L3 7v5c0 5.25 3.75 10.15 9 11.35C17.25 22.15 21 17.25 21 12V7L12 2z"
+          fill="url(#sg)" opacity="0.88"/>
+        <path d="M12 2L3 7v5c0 5.25 3.75 10.15 9 11.35C17.25 22.15 21 17.25 21 12V7L12 2z"
+          fill="none" stroke="rgba(255,255,255,0.25)" stroke-width="0.5"/>
+        <path d="M9 12l2 2 4-4" stroke="white" stroke-width="1.6"
+          stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      <div>
+        <div class="header-title">FraudGuard</div>
+        <div class="header-sub">Fraud &amp; Phishing Detection</div>
+      </div>
     </div>
     <div class="connection-pill checking" id="connectionPill">
       <div class="connection-dot"></div>
-      <span id="connectionLabel">Checking…</span>
+      <span id="connectionLabel">Checking</span>
     </div>
   </div>
 
-  <div class="content">
-    <div class="status" id="status">
-      <div class="status-header">
-        <span class="status-text" id="statusText">Monitoring active tab…</span>
-        <span class="risk-score-badge" id="scoreBadge" style="display:none"></span>
-      </div>
-      <div class="status-explanation" id="statusExplanation"></div>
-    </div>
+  <!-- Gauge Zone -->
+  <div class="gauge-zone" id="gaugeZone">
+    <svg class="gauge-svg" viewBox="0 0 200 200" width="180" height="180">
+      <!-- Background arc track -->
+      <circle cx="100" cy="100" r="80"
+        fill="none" stroke="#21262d" stroke-width="10"
+        stroke-dasharray="377" stroke-dashoffset="0"
+        stroke-linecap="round"
+        transform="rotate(135 100 100)"
+      />
+      <!-- Scan pulse ring (shown during .scanning state via CSS) -->
+      <circle id="scanRing" class="scan-ring" cx="100" cy="100" r="80"
+        fill="none" stroke="rgba(0,180,216,0.45)" stroke-width="10"
+        stroke-dasharray="377" stroke-dashoffset="0"
+        stroke-linecap="round"
+        transform="rotate(135 100 100)"
+      />
+      <!-- Value arc (JS animates stroke-dashoffset and stroke) -->
+      <circle id="gaugeArc" cx="100" cy="100" r="80"
+        fill="none" stroke="#4caf50" stroke-width="10"
+        stroke-dasharray="377" stroke-dashoffset="377"
+        stroke-linecap="round"
+        transform="rotate(135 100 100)"
+      />
+      <!-- Score number -->
+      <text id="gaugeScore" x="100" y="105"
+        text-anchor="middle" dominant-baseline="central"
+        style="font-size:42px;font-weight:700;fill:#e6edf3;
+               font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
+        --
+      </text>
+      <!-- /100 sub-label -->
+      <text id="gaugeScoreSub" x="100" y="127"
+        text-anchor="middle"
+        style="font-size:11px;fill:#444d56;
+               font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
+        /100
+      </text>
+    </svg>
 
-    <div class="current-url" id="currentUrl">
-      <span class="current-url-label">Current page</span>
-      Loading…
-    </div>
+    <div class="risk-label" id="riskLabel">WAITING</div>
 
-    <div class="actions">
-      <button class="btn btn-primary" id="analyzeBtn">🔍 Analyze Current Page</button>
+    <div class="url-display">
+      <span class="url-label">Current page</span>
+      <span id="urlText">Loading…</span>
     </div>
   </div>
 
+  <!-- Explanation Card -->
+  <div class="explanation-card" id="explanationCard">
+    <div class="explanation-text" id="explanationText"></div>
+    <div class="recommendation-text" id="recommendationText"></div>
+  </div>
+
+  <!-- Signals Panel -->
+  <div class="signals-panel" id="signalsPanel">
+    <div class="signals-title">Signal Breakdown</div>
+    <!-- Rows injected by popup.js -->
+  </div>
+
+  <!-- Action Bar -->
+  <div class="action-bar">
+    <button class="btn btn-primary" id="analyzeBtn">⟳ Scan Again</button>
+    <button class="btn btn-report"  id="reportBtn">⚑ Report Phishing</button>
+  </div>
+
+  <!-- Footer -->
   <div class="footer">
-    <span class="footer-version">FraudGuard v1.0.0</span>
-    <span class="footer-last-check" id="lastCheck"></span>
+    <span>FraudGuard v1.0.0</span>
+    <span id="lastCheck"></span>
   </div>
 
   <script src="popup.js"></script>

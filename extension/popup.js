@@ -71,23 +71,57 @@ let scanStartTime   = 0;
 
 const $ = id => document.getElementById(id);
 
+const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+// ── Background messaging ─────────────────────────────────────────────── //
+
+/**
+ * Promisified chrome.runtime.sendMessage. Resolves with the worker's response,
+ * or `{ __error: string }` when the worker could not be reached. Never rejects.
+ */
+function sendMessageOnce(message) {
+  return new Promise((resolve) => {
+    try {
+      chrome.runtime.sendMessage(message, (response) => {
+        const err = chrome.runtime.lastError;
+        if (err) resolve({ __error: err.message });
+        else if (response == null) resolve({ __error: 'no response' });
+        else resolve(response);
+      });
+    } catch (e) {
+      resolve({ __error: e?.message ?? String(e) });
+    }
+  });
+}
+
+/**
+ * Send a message, retrying once after a short delay if the first attempt
+ * couldn't reach the service worker — it may have been waking from dormant,
+ * which is what produces "Could not establish connection. Receiving end does
+ * not exist" on the very first message.
+ */
+async function sendToBackground(message) {
+  let res = await sendMessageOnce(message);
+  if (res.__error) {
+    await delay(500);
+    res = await sendMessageOnce(message);
+  }
+  return res;
+}
+
 // ── Connection check ─────────────────────────────────────────────────── //
 
-function checkConnection() {
+async function checkConnection() {
   const pill  = $('connectionPill');
   const label = $('connectionLabel');
   pill.className    = 'connection-pill checking';
   label.textContent = 'Checking';
 
-  chrome.runtime.sendMessage({ action: 'ping' }, (response) => {
-    if (chrome.runtime.lastError || !response) {
-      pill.className    = 'connection-pill offline';
-      label.textContent = 'Offline';
-      return;
-    }
-    pill.className    = response.online ? 'connection-pill online'  : 'connection-pill offline';
-    label.textContent = response.online ? 'Online'                  : 'Offline';
-  });
+  const res = await sendToBackground({ action: 'ping' });
+  const online = !res.__error && res.online === true;
+
+  pill.className    = online ? 'connection-pill online' : 'connection-pill offline';
+  label.textContent = online ? 'Online' : 'Offline';
 }
 
 // ── Tab helper ───────────────────────────────────────────────────────── //
@@ -300,17 +334,13 @@ async function analyzeCurrentPage() {
 
   enterScanningState();
 
-  chrome.runtime.sendMessage({ action: 'analyze', url: tab.url }, (response) => {
-    if (chrome.runtime.lastError) {
-      exitScanningState(() => showErrorState());
-      return;
-    }
-    if (response?.success) {
-      exitScanningState(() => displayResult(response.data));
-    } else {
-      exitScanningState(() => showErrorState());
-    }
-  });
+  const res = await sendToBackground({ action: 'analyze', url: tab.url });
+
+  if (!res.__error && res.success) {
+    exitScanningState(() => displayResult(res.data));
+  } else {
+    exitScanningState(() => showErrorState());
+  }
 }
 
 function showErrorState() {
@@ -329,25 +359,25 @@ async function reportPhishing() {
   btn.disabled  = true;
   btn.textContent = 'Sending…';
 
-  chrome.runtime.sendMessage({
+  const res = await sendToBackground({
     action:    'report',
     url:       tab.url,
     reason:    'User-reported from popup',
     riskScore: currentAnalysis?.risk_score ?? null,
-  }, (response) => {
-    if (chrome.runtime.lastError || !response?.success) {
-      btn.textContent = 'Failed';
-      btn.classList.add('failed');
-    } else {
-      btn.textContent = '✓ Reported';
-      btn.classList.add('success');
-    }
-    setTimeout(() => {
-      btn.disabled    = false;
-      btn.textContent = '⚑ Report Phishing';
-      btn.classList.remove('success', 'failed');
-    }, 2500);
   });
+
+  if (!res.__error && res.success) {
+    btn.textContent = '✓ Reported';
+    btn.classList.add('success');
+  } else {
+    btn.textContent = 'Failed';
+    btn.classList.add('failed');
+  }
+  setTimeout(() => {
+    btn.disabled    = false;
+    btn.textContent = '⚑ Report Phishing';
+    btn.classList.remove('success', 'failed');
+  }, 2500);
 }
 
 // ── URL display ──────────────────────────────────────────────────────── //

@@ -1,12 +1,24 @@
 /**
- * FraudGuard — Background Service Worker
+ * FraudGuard — Background Service Worker (Manifest V3)
  *
  * Responsibilities:
- *  - Receive analyze/report messages from content scripts and the popup
- *  - Call the FraudGuard backend API
+ *  - Receive analyze/report/ping messages from content scripts and the popup
+ *  - Call the FraudGuard backend API (with timeouts so cold starts can't hang)
  *  - Cache results in chrome.storage.local (1-hour TTL)
  *  - Keep the toolbar badge updated with the current site's risk level
- *  - Surface a "backend unavailable" warning when the server is unreachable
+ *  - Surface a "backend unavailable" fallback when the server is unreachable
+ *
+ * MV3 reliability notes:
+ *  - The message listener is registered synchronously at the top level so the
+ *    service worker always has a receiver as soon as Chrome wakes it. All
+ *    handler logic funnels through a single async `handleMessage`, and every
+ *    code path resolves to a value that is handed to `sendResponse`. The
+ *    listener always returns `true`, keeping the message port open for the
+ *    asynchronous reply. This prevents "The message port closed before a
+ *    response was received" and guarantees senders never hang.
+ *  - Every network call is wrapped in an AbortController timeout so a slow or
+ *    sleeping backend (e.g. Render free-tier cold start) can't keep the worker
+ *    blocked indefinitely or leave the popup stuck on "Checking…".
  */
 
 // ------------------------------------------------------------------ //
@@ -14,10 +26,19 @@
 // ------------------------------------------------------------------ //
 
 /** Base URL of the FraudGuard backend. Change this when deploying remotely. */
-const BACKEND_URL = 'http://localhost:8000';
+const BACKEND_URL = 'https://fraudguard-8yd6.onrender.com';
 
 /** Cache entries older than this are re-fetched. */
 const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
+
+/**
+ * Network timeouts (ms). The analyze timeout is deliberately generous because
+ * the backend runs on a free tier that can cold-start for ~30s; the health
+ * probe is shorter so the popup gets a definitive answer quickly.
+ */
+const HEALTH_TIMEOUT_MS  = 10000;
+const ANALYZE_TIMEOUT_MS = 25000;
+const REPORT_TIMEOUT_MS  = 15000;
 
 /** Badge colours matching the risk classification system. */
 const BADGE_COLORS = {
@@ -27,6 +48,30 @@ const BADGE_COLORS = {
   fallback:    '#ffeb3b',   // yellow — backend unavailable
   clear:       '#888888',   // grey — non-analyzable page
 };
+
+// ------------------------------------------------------------------ //
+//  Small utilities
+// ------------------------------------------------------------------ //
+
+/** True for http(s) URLs — the only pages we can meaningfully analyze. */
+function isHttpUrl(url) {
+  return typeof url === 'string' &&
+    (url.startsWith('http://') || url.startsWith('https://'));
+}
+
+/**
+ * fetch() with an AbortController-based timeout so a hung/sleeping backend
+ * never blocks the service worker forever.
+ */
+async function fetchWithTimeout(resource, options = {}, timeoutMs = 10000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(resource, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 // ------------------------------------------------------------------ //
 //  Cache helpers  (chrome.storage.local — survives service worker restart)
@@ -84,7 +129,10 @@ async function evictCached(url) {
 
 /**
  * Update the toolbar badge for a specific tab to reflect the analysis result.
- * @param {number} tabId
+ * Wrapped so a stale tabId (tab closed/navigated before the async result
+ * arrives) can never throw an unhandled error and destabilize the worker.
+ *
+ * @param {number|null} tabId
  * @param {object} result  AnalyzeResponse object (or fallback object)
  */
 function updateBadge(tabId, result) {
@@ -111,8 +159,7 @@ function updateBadge(tabId, result) {
     color = BADGE_COLORS.safe;
   }
 
-  chrome.action.setBadgeText({ text, tabId });
-  chrome.action.setBadgeBackgroundColor({ color, tabId });
+  setBadge(tabId, text, color);
 }
 
 /**
@@ -120,8 +167,20 @@ function updateBadge(tabId, result) {
  */
 function clearBadge(tabId) {
   if (!tabId) return;
-  chrome.action.setBadgeText({ text: '', tabId });
-  chrome.action.setBadgeBackgroundColor({ color: BADGE_COLORS.clear, tabId });
+  setBadge(tabId, '', BADGE_COLORS.clear);
+}
+
+/**
+ * Low-level badge writer. chrome.action.* reject (or throw) when the target
+ * tab no longer exists; swallow those since a gone tab needs no badge.
+ */
+function setBadge(tabId, text, color) {
+  try {
+    Promise.resolve(chrome.action.setBadgeText({ text, tabId })).catch(() => {});
+    Promise.resolve(chrome.action.setBadgeBackgroundColor({ color, tabId })).catch(() => {});
+  } catch (_) {
+    /* tab gone — nothing to update */
+  }
 }
 
 // ------------------------------------------------------------------ //
@@ -129,11 +188,31 @@ function clearBadge(tabId) {
 // ------------------------------------------------------------------ //
 
 /**
+ * Build a HIGH-CAUTION fallback result. Returned whenever the backend can't be
+ * reached so the UI always warns the user rather than silently passing a site
+ * as safe. Never cached (see setCached).
+ */
+function buildFallback(url, errorMessage) {
+  return {
+    url,
+    risk_score: 70,
+    risk_level: 'Suspicious',
+    signals: [],
+    explanation:
+      '⚠️ FraudGuard could not verify this site — the analysis server is ' +
+      'unavailable. Treat this site with caution until verification can be ' +
+      'completed.',
+    recommendation:
+      'The fraud detection server is not reachable. Avoid entering sensitive ' +
+      'financial information until the connection is restored.',
+    is_fallback: true,
+    error: errorMessage,
+  };
+}
+
+/**
  * Analyze a URL — check cache first, then call the backend.
- *
- * On backend failure returns a degraded-mode result with is_fallback:true
- * and risk_score:70 so the content script always surfaces a warning rather
- * than silently passing the site as safe.
+ * On backend failure returns a degraded-mode fallback (see buildFallback).
  *
  * @param {string} url
  * @returns {Promise<object>}  AnalyzeResponse-shaped object
@@ -147,11 +226,15 @@ async function analyzeUrl(url) {
   try {
     console.log('[FraudGuard] Fetching analysis for:', url);
 
-    const response = await fetch(`${BACKEND_URL}/analyze`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url }),
-    });
+    const response = await fetchWithTimeout(
+      `${BACKEND_URL}/analyze`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url }),
+      },
+      ANALYZE_TIMEOUT_MS,
+    );
 
     if (!response.ok) {
       throw new Error(`API error: ${response.status} ${response.statusText}`);
@@ -165,24 +248,11 @@ async function analyzeUrl(url) {
     return data;
 
   } catch (error) {
-    // Backend is unreachable or returned an error.
-    // Return a HIGH-CAUTION fallback — never a safe result — so the overlay
-    // fires and the user is alerted that verification could not be completed.
-    console.error('[FraudGuard] Backend error:', error.message);
-    return {
-      url,
-      risk_score: 70,
-      risk_level: 'Suspicious',
-      signals: [],
-      explanation:
-        '⚠️ FraudGuard could not verify this site — the analysis server is unavailable. ' +
-        'Treat this site with caution until verification can be completed.',
-      recommendation:
-        'The fraud detection server is not reachable. Avoid entering sensitive ' +
-        'financial information until the connection is restored.',
-      is_fallback: true,
-      error: error.message,
-    };
+    const reason = error.name === 'AbortError'
+      ? 'timeout — backend did not respond in time'
+      : error.message;
+    console.error('[FraudGuard] Backend error:', reason);
+    return buildFallback(url, reason);
   }
 }
 
@@ -195,63 +265,106 @@ async function analyzeUrl(url) {
  */
 async function reportFraud(url, reason = null, riskScore = null) {
   try {
-    const response = await fetch(`${BACKEND_URL}/report`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url, reason, risk_score: riskScore }),
-    });
+    const response = await fetchWithTimeout(
+      `${BACKEND_URL}/report`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url, reason, risk_score: riskScore }),
+      },
+      REPORT_TIMEOUT_MS,
+    );
     if (!response.ok) throw new Error(`Report API error: ${response.status}`);
     return await response.json();
   } catch (error) {
-    console.error('[FraudGuard] Report failed:', error.message);
-    return { status: 'error', error: error.message };
+    const reason2 = error.name === 'AbortError' ? 'timeout' : error.message;
+    console.error('[FraudGuard] Report failed:', reason2);
+    return { status: 'error', error: reason2 };
+  }
+}
+
+/**
+ * Probe the backend /health endpoint. Returns true only on a 2xx response.
+ * Never throws — a timeout or network error resolves to false.
+ */
+async function checkBackendHealth() {
+  try {
+    const response = await fetchWithTimeout(
+      `${BACKEND_URL}/health`,
+      { method: 'GET' },
+      HEALTH_TIMEOUT_MS,
+    );
+    return response.ok;
+  } catch (error) {
+    const reason = error.name === 'AbortError' ? 'timeout' : error.message;
+    console.warn('[FraudGuard] Health check failed:', reason);
+    return false;
   }
 }
 
 // ------------------------------------------------------------------ //
-//  Message listener
+//  Message routing
 // ------------------------------------------------------------------ //
 
-chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  const tabId = sender.tab?.id ?? null;
+/**
+ * Resolve a message to the object that should be sent back to the caller.
+ * Always resolves (errors become an error-shaped result) so the port is
+ * never left hanging.
+ *
+ * @param {object} request
+ * @param {chrome.runtime.MessageSender} sender
+ * @returns {Promise<object>}
+ */
+async function handleMessage(request, sender) {
+  const action = request?.action;
 
-  // --- analyze ------------------------------------------------------- //
-  if (request.action === 'analyze') {
-    const url = request.url;
-
-    // Reject non-HTTP URLs immediately
-    if (!url || (!url.startsWith('http://') && !url.startsWith('https://'))) {
-      sendResponse({ success: false, error: 'invalid URL' });
-      return false;
+  switch (action) {
+    // --- ping (popup connection check) ------------------------------- //
+    case 'ping': {
+      const online = await checkBackendHealth();
+      // `ok` confirms the service worker itself answered; `online` reflects
+      // backend reachability. This lets the popup tell the two apart.
+      return { ok: true, online };
     }
 
-    analyzeUrl(url)
-      .then(result => {
-        updateBadge(tabId, result);
-        sendResponse({ success: true, data: result });
-      })
-      .catch(err => {
-        sendResponse({ success: false, error: err.message });
-      });
+    // --- analyze ----------------------------------------------------- //
+    case 'analyze': {
+      const url = request.url;
+      if (!isHttpUrl(url)) {
+        return { success: false, error: 'invalid URL' };
+      }
+      const result = await analyzeUrl(url);
+      updateBadge(sender?.tab?.id ?? null, result);
+      return { success: true, data: result };
+    }
 
-    return true; // keep channel open for async response
-  }
+    // --- report ------------------------------------------------------ //
+    case 'report': {
+      const data = await reportFraud(
+        request.url,
+        request.reason ?? null,
+        request.riskScore ?? null,
+      );
+      return { success: true, data };
+    }
 
-  // --- report -------------------------------------------------------- //
-  if (request.action === 'report') {
-    reportFraud(request.url, request.reason ?? null, request.riskScore ?? null)
-      .then(result => sendResponse({ success: true, data: result }))
-      .catch(err => sendResponse({ success: false, error: err.message }));
-    return true;
+    default:
+      return { success: false, error: `unknown action: ${action}` };
   }
+}
 
-  // --- ping (popup connection check) --------------------------------- //
-  if (request.action === 'ping') {
-    fetch(`${BACKEND_URL}/health`)
-      .then(r => sendResponse({ online: r.ok }))
-      .catch(() => sendResponse({ online: false }));
-    return true;
-  }
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  handleMessage(request, sender)
+    .then(sendResponse)
+    .catch((err) => {
+      // Should never happen (handleMessage swallows its own errors), but keep
+      // the contract: always send a response so the caller never hangs.
+      console.error('[FraudGuard] Unhandled message error:', err);
+      sendResponse({ success: false, error: String(err?.message ?? err) });
+    });
+
+  // Always return true: every branch responds asynchronously.
+  return true;
 });
 
 // ------------------------------------------------------------------ //
@@ -260,15 +373,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
 /**
  * When a tab starts loading a new URL, evict the cached result for that URL
- * so stale data is never shown on the next analysis.
+ * so stale data is never shown on the next analysis, and clear the badge on
+ * non-analyzable pages.
  */
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (changeInfo.status === 'loading' && tab.url) {
-    // Evict cache so the next analysis fetches fresh data
     evictCached(tab.url);
-
-    // Clear badge while the page loads
-    if (!tab.url.startsWith('http://') && !tab.url.startsWith('https://')) {
+    if (!isHttpUrl(tab.url)) {
       clearBadge(tabId);
     }
   }
@@ -280,6 +391,6 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 
 chrome.runtime.onInstalled.addListener(() => {
   console.log('[FraudGuard] Extension installed / updated.');
-  // Clear any stale cache from previous installs
+  // Clear any stale cache from previous installs.
   chrome.storage.local.clear();
 });

@@ -17,6 +17,13 @@
 const AMBER_THRESHOLD   = 31;   // Minimum score for Tier-1 amber banner
 const OVERLAY_THRESHOLD = 50;   // Minimum score for Tier-2 blocking overlay
 
+/**
+ * Safety net (ms) for the "Report Fraud" button. If the background worker
+ * never replies, reset the button after this long instead of leaving it stuck
+ * on "Sending…". Slightly longer than the worker's own report timeout (15s).
+ */
+const REPORT_TIMEOUT_FALLBACK_MS = 18000;
+
 // ------------------------------------------------------------------ //
 //  Module state
 // ------------------------------------------------------------------ //
@@ -30,6 +37,44 @@ let currentUrl = null;
 
 function getCurrentUrl() {
   return window.location.href;
+}
+
+// ------------------------------------------------------------------ //
+//  Runtime guard
+// ------------------------------------------------------------------ //
+
+/**
+ * True while this content script can still talk to its background worker.
+ * After the extension is reloaded/updated, the old content script lingers on
+ * the page but `chrome.runtime.id` becomes undefined and any sendMessage call
+ * throws "Extension context invalidated". Guarding avoids spamming that error
+ * on every poll tick.
+ */
+function isExtensionAlive() {
+  try {
+    return Boolean(chrome.runtime && chrome.runtime.id);
+  } catch (_) {
+    return false;
+  }
+}
+
+/**
+ * sendMessage wrapper that never throws. Invokes `callback(response)` only on
+ * a successful reply; logs and ignores connection errors.
+ */
+function safeSendMessage(message, callback) {
+  if (!isExtensionAlive()) return;
+  try {
+    chrome.runtime.sendMessage(message, (response) => {
+      if (chrome.runtime.lastError) {
+        console.debug('[FraudGuard] Message error:', chrome.runtime.lastError.message);
+        return;
+      }
+      if (typeof callback === 'function') callback(response);
+    });
+  } catch (err) {
+    console.debug('[FraudGuard] sendMessage threw:', err?.message ?? err);
+  }
 }
 
 // ------------------------------------------------------------------ //
@@ -54,15 +99,11 @@ async function analyzeCurrentUrl() {
 
   console.log('[FraudGuard] Analyzing:', url);
 
-  chrome.runtime.sendMessage({ action: 'analyze', url }, (response) => {
-    if (chrome.runtime.lastError) {
-      console.error('[FraudGuard] Message error:', chrome.runtime.lastError.message);
-      return;
-    }
+  safeSendMessage({ action: 'analyze', url }, (response) => {
     if (response?.success) {
       handleAnalysisResult(response.data);
     } else {
-      console.error('[FraudGuard] Analysis failed:', response?.error);
+      console.warn('[FraudGuard] Analysis failed:', response?.error);
     }
   });
 }
@@ -73,9 +114,17 @@ async function analyzeCurrentUrl() {
 
 /**
  * Route an AnalyzeResponse to the correct warning tier.
+ * A URL the user has already acknowledged ("Continue Anyway") is never
+ * re-warned for the remainder of the session.
  */
 function handleAnalysisResult(analysis) {
   const score = analysis.risk_score ?? 0;
+  const url = analysis.url ?? getCurrentUrl();
+
+  if (isAcknowledged(url)) {
+    removeAllWarnings();
+    return;
+  }
 
   if (score >= OVERLAY_THRESHOLD) {
     removeAmberBanner();
@@ -267,7 +316,14 @@ function injectOverlay(analysis) {
   reportBtn.addEventListener('click', () => {
     reportBtn.disabled = true;
     reportBtn.textContent = 'Sending…';
-    chrome.runtime.sendMessage(
+
+    if (!isExtensionAlive()) {
+      reportBtn.textContent = 'Report failed';
+      setTimeout(() => removeOverlay(), 1500);
+      return;
+    }
+
+    safeSendMessage(
       {
         action: 'report',
         url: analysis.url ?? getCurrentUrl(),
@@ -275,14 +331,19 @@ function injectOverlay(analysis) {
         riskScore: analysis.risk_score ?? null,
       },
       (response) => {
-        if (chrome.runtime.lastError || !response?.success) {
-          reportBtn.textContent = 'Report failed';
-        } else {
-          reportBtn.textContent = '✓ Reported';
-        }
+        reportBtn.textContent = response?.success ? '✓ Reported' : 'Report failed';
         setTimeout(() => removeOverlay(), 1500);
       },
     );
+
+    // If the worker never replies (safeSendMessage swallows the error), still
+    // close the overlay so the button doesn't sit on "Sending…" forever.
+    setTimeout(() => {
+      if (reportBtn.textContent === 'Sending…') {
+        reportBtn.textContent = 'Report failed';
+        setTimeout(() => removeOverlay(), 1500);
+      }
+    }, REPORT_TIMEOUT_FALLBACK_MS);
   });
 
   continueBtn.addEventListener('click', () => {
@@ -322,16 +383,19 @@ function removeAllWarnings() {
 
 /**
  * Kick off an immediate analysis, then poll every second to detect SPA
- * navigation (URL changes without a full page reload).
- *
- * NOTE: The interval variable is named `lastUrl` — not `currentUrl` — to
- * avoid shadowing the module-level `currentUrl` tracking variable.
+ * navigation (URL changes without a full page reload). Stops polling once the
+ * extension context is gone (e.g. after an extension reload) so a stale content
+ * script doesn't keep firing into a dead port.
  */
 function monitorUrlChanges() {
   analyzeCurrentUrl();
 
   let lastUrl = getCurrentUrl();
-  setInterval(() => {
+  const poll = setInterval(() => {
+    if (!isExtensionAlive()) {
+      clearInterval(poll);
+      return;
+    }
     const newUrl = getCurrentUrl();
     if (newUrl !== lastUrl) {
       lastUrl = newUrl;
